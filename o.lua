@@ -1,14 +1,63 @@
 
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
-local UserInputService = game:GetService("UserInputService")
-local Stats = game:GetService("Stats")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local HttpService = game:GetService("HttpService")
+-- continuation
+-- camera silent aim
+
+-- Anticheat Bypass
+local function bypass_anticheat()
+    local success, result = pcall(function()
+        -- Hook functions to bypass anticheat
+        local mt = getrawmetatable(game)
+        local old = mt.__namecall
+
+        setreadonly(mt, false)
+        mt.__namecall = newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+            local args = {...}
+
+            -- Bypass anticheat checks
+            if method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRayWithWhitelist" or method == "Raycast" then
+                if not checkcaller() then
+                    return old(self, ...)
+                end
+            end
+
+            return old(self, ...)
+        end)
+        setreadonly(mt, true)
+
+        -- Clone services to avoid detection
+        local cloneref = cloneref or function(obj) return obj end
+
+        -- Disconnect any existing connections that might be monitored
+        for _, connection in pairs(getconnections(game:GetService("RunService").Heartbeat)) do
+            if connection.Function and string.find(tostring(connection.Function), "anticheat") then
+                pcall(connection.Disconnect, connection)
+            end
+        end
+
+        warn("[+] Osiris v5: Anticheat bypassed successfully")
+    end)
+
+    if not success then
+        warn("[!] Osiris v5: Anticheat bypass failed - " .. tostring(result))
+    end
+end
+
+-- Execute bypass immediately
+bypass_anticheat()
+
+local RunService = cloneref(game:GetService("RunService"))
+local Players = cloneref(game:GetService("Players"))
+local Workspace = cloneref(game:GetService("Workspace"))
+local UserInputService = cloneref(game:GetService("UserInputService"))
+local Stats = cloneref(game:GetService("Stats"))
+local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+local HttpService = cloneref(game:GetService("HttpService"))
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
+local mouse = player:GetMouse()
+
 local Utility = {
 	Create = function(self, class, properties)
 		local instance = Instance.new(class)
@@ -144,26 +193,114 @@ local Utility = {
 		end
 	end,
 
+	GetAllBodyParts = function(self, character)
+		local parts = {}
+		if character then
+			for _, child in pairs(character:GetChildren()) do
+				if child:IsA("BasePart") and child.Name ~= "HumanoidRootPart" then
+					table.insert(parts, child)
+				end
+			end
+		end
+		return parts
+	end,
+
+	GetClosestPartToMouse = function(self, character)
+		local closestPart = nil
+		local closestDist = math.huge
+		local mousePos = UserInputService:GetMouseLocation()
+
+		for _, part in pairs(self:GetAllBodyParts(character)) do
+			local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
+			if onScreen then
+				local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+				if dist < closestDist then
+					closestDist = dist
+					closestPart = part
+				end
+			end
+		end
+
+		return closestPart
+	end,
+
+	GetClosestPointNormal = function(self, character, part)
+		if not part then return nil end
+
+		local localPos = part.CFrame:PointToObjectSpace(mouse.Hit.Position)
+		local size = part.Size / 2
+
+		local x = math.clamp(localPos.X, -size.X, size.X)
+		local y = math.clamp(localPos.Y, -size.Y, size.Y)
+		local z = math.clamp(localPos.Z, -size.Z, size.Z)
+
+		return part.CFrame:PointToWorldSpace(Vector3.new(x, y, z))
+	end,
+
+	GetClosestPointAdvanced = function(self, character, part)
+		if not part then return nil end
+
+		local mouseLocation = UserInputService:GetMouseLocation()
+		local pointRay = camera:ViewportPointToRay(mouseLocation.X, mouseLocation.Y)
+		
+		local intersection = pointRay.Origin + (pointRay.Direction * pointRay.Direction:Dot(part.Position - pointRay.Origin))
+		local transform = part.CFrame:PointToObjectSpace(intersection)
+		
+		local reductionPercentage = 0
+		local reducedSize = (part.Size - (part.Size * reductionPercentage / 100))
+		local halfSize = reducedSize / 2
+
+		return part.CFrame * Vector3.new(
+			math.clamp(transform.X, -halfSize.X, halfSize.X),
+			math.clamp(transform.Y, -halfSize.Y, halfSize.Y),
+			math.clamp(transform.Z, -halfSize.Z, halfSize.Z)
+		)
+	end,
+
 	GetTargetPosition = function(self, target, hitPart, prediction)
 		if not target or not target.Character then return nil end
 
-		local part
-		if hitPart == "Head" then
-			part = target.Character:FindFirstChild("Head")
-		elseif hitPart == "Torso" then
-			part = target.Character:FindFirstChild("UpperTorso") or target.Character:FindFirstChild("Torso")
-		else
-			part = target.Character:FindFirstChild("Head")
-		end
+		local hrp = target.Character:FindFirstChild("HumanoidRootPart")
+		if not hrp then return nil end
 
-		if part then
-			local hrp = target.Character:FindFirstChild("HumanoidRootPart")
-			if hrp then
-				local velocity = hrp.AssemblyLinearVelocity
-				local adjustedPred = prediction * getgenv().Osiris.Silent.PredictionPower
+		local velocity = hrp.AssemblyLinearVelocity
+		local adjustedPred = prediction * getgenv().Osiris.Silent.PredictionPower
+
+		if hitPart == "MostFavorablePoint" then
+			local closestPart = self:GetClosestPartToMouse(target.Character)
+			if closestPart then
+				local closestPoint = self:GetClosestPointNormal(target.Character, closestPart)
+				if closestPoint then
+					return closestPoint + velocity * adjustedPred
+				end
+			end
+			-- Fallback to Head if no part found
+			local head = target.Character:FindFirstChild("Head")
+			if head then
+				return head.Position + velocity * adjustedPred
+			end
+		elseif hitPart == "ClosestPoint" then
+			local closestPart = self:GetClosestPartToMouse(target.Character)
+			if closestPart then
+				local closestPoint = self:GetClosestPointAdvanced(target.Character, closestPart)
+				if closestPoint then
+					return closestPoint + velocity * adjustedPred
+				end
+			end
+			-- Fallback to Head if no part found
+			local head = target.Character:FindFirstChild("Head")
+			if head then
+				return head.Position + velocity * adjustedPred
+			end
+		elseif hitPart == "Head" then
+			local part = target.Character:FindFirstChild("Head")
+			if part then
 				return part.Position + velocity * adjustedPred
-			else
-				return part.Position
+			end
+		elseif hitPart == "Torso" then
+			local part = target.Character:FindFirstChild("UpperTorso") or target.Character:FindFirstChild("Torso")
+			if part then
+				return part.Position + velocity * adjustedPred
 			end
 		end
 
@@ -236,7 +373,7 @@ end
 
 
 local ESPHolder = Utility:Create('ScreenGui', {
-	Parent = gethui and gethui() or game:GetService("CoreGui"),
+	Parent = gethui and gethui() or cloneref(game:GetService("CoreGui")),
 	Name = 'OsirisESPHolder',
 })
 
