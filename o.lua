@@ -1,240 +1,668 @@
--- Services
+-- ======================================================================================== --
+-- UTILITY FUNCTIONS                                                                       --
+-- ======================================================================================== --
+
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local UserInputService = game:GetService("UserInputService")
 local Stats = game:GetService("Stats")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 
--- Local player and camera
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 
--- State variables
-local silentAimActive = false
-local camlockActive = false
-local triggerbotActive = false
-local currentTarget = nil
-local isFiring = false
-local firingConnection
-local triggerbotConnection
-local lastTriggerTime = 0
-local connection
+-- create utility functions (based on Nemesis)
+local Utility = {
+	Create = function(self, class, properties)
+		local instance = Instance.new(class)
+		for property, value in pairs(properties) do
+			instance[property] = value
+		end
+		return instance
+	end,
 
+	LerpTransparency = function(self, obj, distance)
+		local maxDist = 100
+		local minTransparency = 0.1
+		local transparency = math.clamp(1 - (distance / maxDist), minTransparency, 1)
+		if obj:IsA("Frame") or obj:IsA("TextLabel") then
+			obj.BackgroundTransparency = transparency
+		elseif obj:IsA("UIStroke") then
+			obj.Transparency = transparency
+		elseif obj:IsA("TextButton") then
+			obj.BackgroundTransparency = transparency
+			obj.TextTransparency = transparency
+		end
+	end,
 
+	GetDistance = function(self, pos1, pos2)
+		return (pos1 - pos2).Magnitude
+	end,
 
+	IsBehindWall = function(self, target)
+		if not target or not target.Character then return false end
 
+		local origin = camera.CFrame.Position
+		local targetPos = target.Character.HumanoidRootPart.Position
 
+		local raycastParams = RaycastParams.new()
+		raycastParams.FilterDescendantsInstances = {player.Character}
+		raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
 
+		local result = Workspace:Raycast(origin, (targetPos - origin).Unit * (targetPos - origin).Magnitude, raycastParams)
+		return result ~= nil
+	end,
 
+	GetPing = function(self)
+		return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+	end,
 
+	GetHealth = function(self, target)
+		if not target or not target.Character then return 0 end
+		local humanoid = target.Character:FindFirstChildOfClass("Humanoid")
+		return humanoid and humanoid.Health or 0
+	end,
 
+	GetMaxHealth = function(self, target)
+		if not target or not target.Character then return 100 end
+		local humanoid = target.Character:FindFirstChildOfClass("Humanoid")
+		return humanoid and humanoid.MaxHealth or 100
+	end,
 
+	IsAlive = function(self, target)
+		if not target or not target.Character then return false end
+		local humanoid = target.Character:FindFirstChildOfClass("Humanoid")
+		return humanoid and humanoid.Health > 0
+	end,
 
+	GetTool = function(self, target)
+		if not target or not target.Character then return nil end
+		return target.Character:FindFirstChildOfClass("Tool")
+	end,
 
+	GetWeaponName = function(self, target)
+		local tool = self:GetTool(target)
+		return tool and tool.Name or "Others"
+	end,
 
+	GetClosestPlayer = function(self, fov, teamCheck)
+		local closestPlayer = nil
+		local closestDist = math.huge
+		local mousePos = UserInputService:GetMouseLocation()
+
+		for _, target in ipairs(Players:GetPlayers()) do
+			if target ~= player and self:IsAlive(target) then
+				if teamCheck and target.Team == player.Team then continue end
+
+				local hrp = target.Character:FindFirstChild("HumanoidRootPart")
+				if hrp then
+					local screenPos, onScreen = camera:WorldToViewportPoint(hrp.Position)
+					if onScreen then
+						local distFromMouse = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+						if distFromMouse <= fov and distFromMouse < closestDist then
+							if not getgenv().Osiris.Core.GlobalWallCheck or not self:IsBehindWall(target) then
+								closestPlayer = target
+								closestDist = distFromMouse
+							end
+						end
+					end
+				end
+			end
+		end
+
+		return closestPlayer
+	end,
+
+	GetHitChance = function(self, weapon, isMidAir)
+		local hitchanceTable = isMidAir and getgenv().Osiris.Hitchances.MidAir or getgenv().Osiris.Hitchances.Ground
+		return hitchanceTable[weapon] or hitchanceTable.Others or 100
+	end,
+
+	ShouldHit = function(self, weapon, isMidAir)
+		if not getgenv().Osiris.Hitchances.Enabled then return true end
+
+		local chance = self:GetHitChance(weapon, isMidAir)
+		return math.random(1, 100) <= chance
+	end,
+
+	IsInAir = function(self, target)
+		if not target or not target.Character then return false end
+		local hrp = target.Character:FindFirstChild("HumanoidRootPart")
+		return hrp and hrp.AssemblyLinearVelocity.Y > 5
+	end,
+
+	GetPrediction = function(self, autoPred, manualPred, autoPredTable)
+		if autoPred then
+			local ping = self:GetPing()
+			for range, pred in pairs(autoPredTable) do
+				local minPing, maxPing = range:match("(%d+)-(%d+)")
+				minPing, maxPing = tonumber(minPing), tonumber(maxPing)
+				if ping >= minPing and ping < maxPing then
+					return pred
+				end
+			end
+			return manualPred
+		else
+			return manualPred
+		end
+	end,
+
+	GetTargetPosition = function(self, target, hitPart, prediction)
+		if not target or not target.Character then return nil end
+
+		local part
+		if hitPart == "Head" then
+			part = target.Character:FindFirstChild("Head")
+		elseif hitPart == "Torso" then
+			part = target.Character:FindFirstChild("UpperTorso") or target.Character:FindFirstChild("Torso")
+		else
+			part = target.Character:FindFirstChild("Head")
+		end
+
+		if part then
+			local hrp = target.Character:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				local velocity = hrp.AssemblyLinearVelocity
+				local adjustedPred = prediction * getgenv().Osiris.Silent.PredictionPower
+				return part.Position + velocity * adjustedPred
+			else
+				return part.Position
+			end
+		end
+
+		return nil
+	end,
+
+	GetFOVRadius = function(self, weapon, distance, fovData, fovType, rangeData)
+		if fovType == "CircleFOV" then
+			local weaponFOVs = fovData.CircleFOV
+
+			local category
+			if distance <= rangeData.ShortDistance then
+				category = 1
+			elseif distance <= rangeData.MediumDistance then
+				category = 2
+			else
+				category = 3
+			end
+
+			if weaponFOVs[weapon] then
+				return weaponFOVs[weapon][category] or weaponFOVs[weapon][2] or 10
+			else
+				return weaponFOVs.Others[category] or weaponFOVs.Others[2] or 10
+			end
+		else
+			return fovData.BoxFOV.Height * 10
+		end
+	end,
+}
 
 -- ======================================================================================== --
 -- CAMERA FUNCTIONS                                                                       --
 -- ======================================================================================== --
 
--- safeSetCameraCFrame: snap camera, revert client-side same frame
-local function safeSetCameraCFrame(newCF, revertCF)
-    local revertScheduled = false
-    local originalCameraType = camera.CameraType
-    camera.CameraType = Enum.CameraType.Scriptable
-    camera.CFrame = newCF
+local function SafeSetCameraCFrame(newCF, revertCF)
+	local revertScheduled = false
+	local originalCameraType = camera.CameraType
+	camera.CameraType = Enum.CameraType.Scriptable
+	camera.CFrame = newCF
 
-    -- store the humanoid and original autorotate
-    local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-    local rootPart = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-    local originalAutoRotate = humanoid and humanoid.AutoRotate
+	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	local rootPart = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local originalAutoRotate = humanoid and humanoid.AutoRotate
 
-    -- disable rotation and lock the root part
-    if humanoid then
-        humanoid.AutoRotate = false
-    end
-    if rootPart then
-        local originalRootCF = rootPart.CFrame
-        rootPart.CFrame = originalRootCF
-    end
+	if humanoid then
+		humanoid.AutoRotate = false
+	end
 
-    if not revertScheduled then
-        revertScheduled = true
-        RunService:BindToRenderStep("CameraRevert", Enum.RenderPriority.Camera.Value + 1, function()
-            -- revert camera
-            camera.CFrame = revertCF
-            camera.CameraType = originalCameraType
+	if rootPart then
+		local originalRootCF = rootPart.CFrame
+		rootPart.CFrame = originalRootCF
+	end
 
-            -- restore autorotate
-            if humanoid and originalAutoRotate ~= nil then
-                humanoid.AutoRotate = originalAutoRotate
-            end
+	if not revertScheduled then
+		revertScheduled = true
+		RunService:BindToRenderStep("CameraRevert", Enum.RenderPriority.Camera.Value + 1, function()
+			camera.CFrame = revertCF
+			camera.CameraType = originalCameraType
 
-            -- restore root orientation
-            if rootPart then
-                rootPart.CFrame = rootPart.CFrame
-            end
+			if humanoid and originalAutoRotate ~= nil then
+				humanoid.AutoRotate = originalAutoRotate
+			end
 
-            RunService:UnbindFromRenderStep("CameraRevert")
-            revertScheduled = false
-        end)
-    end
+			if rootPart then
+				rootPart.CFrame = rootPart.CFrame
+			end
+
+			RunService:UnbindFromRenderStep("CameraRevert")
+			revertScheduled = false
+		end)
+	end
 end
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 -- ======================================================================================== --
--- UTILITY FUNCTIONS                                                                       --
+-- ESP SYSTEM (BASED ON NEMESIS)                                                           --
 -- ======================================================================================== --
 
--- get current weapon name
-local function getCurrentWeaponName()
-    if not player.Character then return "Others" end
-    local tool = player.Character:FindFirstChildWhichIsA("Tool")
-    if tool then
-        return tool.Name
-    end
-    return "Others"
+local ESPHolder = Utility:Create('ScreenGui', {
+	Parent = gethui and gethui() or game:GetService("CoreGui"),
+	Name = 'OsirisESPHolder',
+})
+
+local ESPObjects = {}
+
+local function CreateESP(player)
+	if ESPObjects[player] then
+		ESPObjects[player]:Destroy()
+	end
+
+	local ESP = {
+		Player = player,
+		Objects = {},
+	}
+
+	ESP.Objects.Name = Utility:Create('TextLabel', {
+		Parent = ESPHolder,
+		Position = UDim2.new(0.5, 0, 0, -11),
+		Size = UDim2.new(0, 100, 0, 20),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		BackgroundTransparency = 1,
+		TextColor3 = Color3.fromRGB(255, 255, 255),
+		TextSize = 14,
+		TextStrokeTransparency = 0,
+		TextStrokeColor3 = Color3.fromRGB(0, 0, 0),
+		RichText = true,
+	})
+
+	ESP.Objects.Distance = Utility:Create('TextLabel', {
+		Parent = ESPHolder,
+		Position = UDim2.new(0.5, 0, 0, 11),
+		Size = UDim2.new(0, 100, 0, 20),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		BackgroundTransparency = 1,
+		TextColor3 = Color3.fromRGB(255, 255, 255),
+		TextSize = 14,
+		TextStrokeTransparency = 0,
+		TextStrokeColor3 = Color3.fromRGB(0, 0, 0),
+		RichText = true,
+	})
+
+	ESP.Objects.Box = Utility:Create('Frame', {
+		Parent = ESPHolder,
+		BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+		BackgroundTransparency = 0.75,
+		BorderSizePixel = 0,
+	})
+
+	ESP.Objects.BoxOutline = Utility:Create('UIStroke', {
+		Parent = ESP.Objects.Box,
+		Transparency = 0,
+		Color = Color3.fromRGB(255, 255, 255),
+		LineJoinMode = Enum.LineJoinMode.Miter,
+	})
+
+	ESP.Objects.HealthBar = Utility:Create('Frame', {
+		Parent = ESPHolder,
+		BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+		BackgroundTransparency = 0,
+	})
+
+	ESP.Objects.HealthBarBackground = Utility:Create('Frame', {
+		Parent = ESPHolder,
+		ZIndex = -1,
+		BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+		BackgroundTransparency = 0,
+	})
+
+	ESPObjects[player] = ESP
+	return ESP
 end
 
--- get closest player in fov
-local function getClosestPlayerInFOV()
-    local closestPlayer = nil
-    local closestDistance = math.huge
-    local mousePos = UserInputService:GetMouseLocation()
+local function UpdateESP()
+	for player, ESP in pairs(ESPObjects) do
+		if not Utility:IsAlive(player) then
+			for _, obj in pairs(ESP.Objects) do
+				obj.Visible = false
+			end
+			continue
+		end
 
-    for _, targetPlayer in ipairs(Players:GetPlayers()) do
-        if targetPlayer ~= player and targetPlayer.Character then
-            local humanoidRootPart = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
-            if humanoidRootPart then
-                local screenPos, onScreen = camera:WorldToViewportPoint(humanoidRootPart.Position)
-                if onScreen then
-                    local distanceFromMouse = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		if not hrp then continue end
 
-                    local fovRadius = 100 -- basic fov check
-                    if distanceFromMouse <= fovRadius and distanceFromMouse < closestDistance then
-                        closestPlayer = targetPlayer
-                        closestDistance = distanceFromMouse
-                    end
-                end
-            end
-        end
-    end
+		local pos, onScreen = camera:WorldToViewportPoint(hrp.Position)
+		local dist = Utility:GetDistance(camera.CFrame.Position, hrp.Position) / 3.5714285714
 
-    return closestPlayer
+		if onScreen and dist <= 1000 then -- Max draw distance
+			local size = hrp.Size.Y
+			local scaleFactor = (size * camera.ViewportSize.Y) / (pos.Z * 2)
+			local w, h = 3 * scaleFactor, 4.5 * scaleFactor
+
+			-- Name
+			if getgenv().Osiris.Visuals.RaidAwareness.Modules.Name.Visible then
+				local nameColor = (player.Team == Players.LocalPlayer.Team) and getgenv().Osiris.Visuals.RaidAwareness.AllyColor or getgenv().Osiris.Visuals.RaidAwareness.EnemyColor
+				ESP.Objects.Name.TextColor3 = nameColor
+				ESP.Objects.Name.Position = UDim2.new(0, pos.X, 0, pos.Y - 35)
+				ESP.Objects.Name.Text = player.Name
+				ESP.Objects.Name.Visible = true
+			else
+				ESP.Objects.Name.Visible = false
+			end
+
+			-- Distance
+			if getgenv().Osiris.Visuals.RaidAwareness.Modules.Distance.Visible then
+				ESP.Objects.Distance.Position = UDim2.new(0, pos.X, 0, pos.Y + 20)
+				ESP.Objects.Distance.Text = string.format("%.0f studs", dist)
+				ESP.Objects.Distance.Visible = true
+			else
+				ESP.Objects.Distance.Visible = false
+			end
+
+			-- Box
+			if getgenv().Osiris.Visuals.RaidAwareness.Visible then
+				ESP.Objects.Box.Size = UDim2.new(0, w, 0, h)
+				ESP.Objects.Box.Position = UDim2.new(0, pos.X - w/2, 0, pos.Y - h/2)
+				ESP.Objects.Box.Visible = true
+			else
+				ESP.Objects.Box.Visible = false
+			end
+
+			-- Health Bar
+			local health = Utility:GetHealth(player)
+			local maxHealth = Utility:GetMaxHealth(player)
+			local healthPercent = health / maxHealth
+
+			ESP.Objects.HealthBar.Size = UDim2.new(0, 2, 0, h * healthPercent)
+			ESP.Objects.HealthBar.Position = UDim2.new(0, pos.X - w/2 - 5, 0, pos.Y + h/2 - h * healthPercent)
+			ESP.Objects.HealthBar.BackgroundColor3 = Color3.fromHSV(healthPercent * 0.3, 1, 1)
+			ESP.Objects.HealthBar.Visible = getgenv().Osiris.Visuals.RaidAwareness.Visible
+
+			ESP.Objects.HealthBarBackground.Size = UDim2.new(0, 2, 0, h)
+			ESP.Objects.HealthBarBackground.Position = UDim2.new(0, pos.X - w/2 - 5, 0, pos.Y - h/2)
+			ESP.Objects.HealthBarBackground.Visible = getgenv().Osiris.Visuals.RaidAwareness.Visible
+
+		else
+			for _, obj in pairs(ESP.Objects) do
+				obj.Visible = false
+			end
+		end
+	end
 end
 
--- get target position with prediction
-local function getTargetPosition(targetPlayer, hitTarget, prediction)
-    if not targetPlayer or not targetPlayer.Character then return nil end
-
-    local targetPart
-    if hitTarget == "Head" then
-        targetPart = targetPlayer.Character:FindFirstChild("Head")
-    elseif hitTarget == "Torso" then
-        targetPart = targetPlayer.Character:FindFirstChild("UpperTorso") or targetPlayer.Character:FindFirstChild("Torso")
-    else
-        targetPart = targetPlayer.Character:FindFirstChild("Head")
-    end
-
-    if targetPart then
-        local humanoidRootPart = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
-        if humanoidRootPart then
-            local velocity = humanoidRootPart.AssemblyLinearVelocity
-            local adjustedPrediction = prediction * getgenv().Osiris.Silent.PredictionPower
-            return targetPart.Position + velocity * adjustedPrediction
-        else
-            return targetPart.Position
-        end
-    end
-
-    return nil
+-- Initialize ESP for all players
+for _, p in ipairs(Players:GetPlayers()) do
+	if p ~= player then
+		CreateESP(p)
+	end
 end
 
-
-
-
-
-
-
-
-
-
-
-
-
+Players.PlayerAdded:Connect(CreateESP)
 
 -- ======================================================================================== --
--- PREDICTION FUNCTIONS                                                                    --
+-- SILENT AIM SYSTEM                                                                      --
 -- ======================================================================================== --
 
--- get ping prediction
-local function getPingPrediction(autoPredictionEnabled, manualPrediction, autoPredTable)
-    if not autoPredictionEnabled then
-        return manualPrediction
-    end
+local SilentAimActive = false
+local CurrentTarget = nil
+local IsFiring = false
 
-    local ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-    local autoPred = autoPredTable
+local function PerformSilentAim()
+	if not SilentAimActive or not getgenv().Osiris.Silent.Enabled then return end
 
-    if ping >= 30 and ping < 40 then
-        return autoPred["30-40"]
-    elseif ping >= 40 and ping < 50 then
-        return autoPred["40-50"]
-    elseif ping >= 50 and ping < 60 then
-        return autoPred["50-60"]
-    elseif ping >= 60 and ping < 70 then
-        return autoPred["60-70"]
-    elseif ping >= 70 and ping < 80 then
-        return autoPred["70-80"]
-    elseif ping >= 80 and ping < 90 then
-        return autoPred["80-90"]
-    elseif ping >= 90 and ping < 100 then
-        return autoPred["90-100"]
-    elseif ping >= 100 and ping < 110 then
-        return autoPred["100-110"]
-    elseif ping >= 110 and ping < 120 then
-        return autoPred["110-120"]
-    elseif ping >= 120 and ping < 130 then
-        return autoPred["120-130"]
-    elseif ping >= 130 and ping < 140 then
-        return autoPred["130-140"]
-    elseif ping >= 140 and ping < 150 then
-        return autoPred["140-150"]
-    else
-        return manualPrediction
-    end
+	local target
+	if getgenv().Osiris.Silent.Mode == "Target" then
+		target = CurrentTarget
+	else
+		target = Utility:GetClosestPlayer(1000, false) -- Large FOV for regular mode
+	end
+
+	if not target or not Utility:ShouldHit(Utility:GetWeaponName(target), Utility:IsInAir(target)) then return end
+
+	local prediction = Utility:GetPrediction(
+		getgenv().Osiris.Silent["Auto-Prediction"],
+		getgenv().Osiris.Silent.Prediction,
+		getgenv().Osiris.AutoPrediction
+	)
+
+	local targetPos = Utility:GetTargetPosition(target, getgenv().Osiris.Silent.HitTarget, prediction)
+	if not targetPos then return end
+
+	local revertCF = camera.CFrame
+	local newCF = CFrame.new(camera.CFrame.Position, targetPos)
+	SafeSetCameraCFrame(newCF, revertCF)
 end
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 -- ======================================================================================== --
--- FOV FUNCTIONS                                                                           --
+-- CAMLOCK SYSTEM                                                                         --
 -- ======================================================================================== --
 
--- drawing objects for fov visualization
+local CamlockActive = false
+
+local function HandleCamlock()
+	if not CamlockActive or not getgenv().Osiris.Camlock.Enabled then return end
+
+	local target = CurrentTarget or Utility:GetClosestPlayer(getgenv().Osiris.Camlock.Radius, false)
+	if not target then return end
+
+	local prediction = Utility:GetPrediction(
+		getgenv().Osiris.Silent["Auto-Prediction"],
+		getgenv().Osiris.Camlock.Prediction,
+		getgenv().Osiris.AutoPrediction
+	)
+
+	local targetPos = Utility:GetTargetPosition(target, "Head", prediction)
+	if not targetPos then return end
+
+	local smoothness = getgenv().Osiris.Camlock.Smoothness
+	local currentCF = camera.CFrame
+	local targetCF = CFrame.new(currentCF.Position, targetPos)
+	local shakiness = getgenv().Osiris.Camlock.CameraShakiness
+
+	-- Apply shakiness
+	local shakeOffset = Vector3.new(
+		math.random(-shakiness.X, shakiness.X),
+		math.random(-shakiness.Y, shakiness.Y),
+		math.random(-shakiness.Z, shakiness.Z)
+	)
+
+	targetCF = targetCF * CFrame.new(shakeOffset)
+	camera.CFrame = currentCF:Lerp(targetCF, 1/smoothness)
+end
+
+-- ======================================================================================== --
+-- TRIGGERBOT SYSTEM                                                                      --
+-- ======================================================================================== --
+
+local TriggerbotActive = false
+local LastTriggerTime = 0
+
+local function PerformTriggerbot()
+	if not TriggerbotActive or not getgenv().Osiris.Triggerbot.Enabled then return end
+
+	local currentTime = tick()
+	local cooldown = math.random(getgenv().Osiris.Triggerbot.MinDelay, getgenv().Osiris.Triggerbot.MaxDelay) / 1000
+
+	if currentTime - LastTriggerTime < cooldown then return end
+
+	local target = Utility:GetClosestPlayer(100, false)
+	if not target then return end
+
+	local mousePos = UserInputService:GetMouseLocation()
+	local hrp = target.Character:FindFirstChild("HumanoidRootPart")
+
+	if hrp then
+		local screenPos, onScreen = camera:WorldToViewportPoint(hrp.Position)
+		if onScreen then
+			local distFromMouse = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+			local tolerance = 5
+
+			if distFromMouse <= tolerance then
+				mouse1press()
+				task.wait(0.01)
+				mouse1release()
+				LastTriggerTime = currentTime
+			end
+		end
+	end
+end
+
+-- ======================================================================================== --
+-- MACRO SYSTEM                                                                           --
+-- ======================================================================================== --
+
+local MacroActive = false
+local MacroConnection = nil
+
+local function StartMacro()
+	if MacroConnection then MacroConnection:Disconnect() end
+
+	MacroConnection = RunService.RenderStepped:Connect(function()
+		if not getgenv().Osiris.Macro.Enabled or not MacroActive then return end
+
+		-- Third person macro (rapid fire)
+		if getgenv().Osiris.Macro.Type == "ThirdPerson" then
+			keypress(0x45) -- E key
+			task.wait(0.01)
+			keyrelease(0x45)
+		end
+	end)
+end
+
+local function StopMacro()
+	if MacroConnection then
+		MacroConnection:Disconnect()
+		MacroConnection = nil
+	end
+	MacroActive = false
+end
+
+-- ======================================================================================== --
+-- ANTI-LOCK SYSTEM                                                                       --
+-- ======================================================================================== --
+
+local AntiLockActive = false
+
+local function HandleAntiLock()
+	if not AntiLockActive or not getgenv().Osiris.AntiLock.Enabled then return end
+
+	if getgenv().Osiris.AntiLock.Type == "Sides" then
+		-- Basic anti-lock by slightly modifying camera position
+		local currentCF = camera.CFrame
+		local randomOffset = Vector3.new(
+			math.random(-0.1, 0.1),
+			math.random(-0.1, 0.1),
+			math.random(-0.1, 0.1)
+		)
+		local newCF = currentCF * CFrame.new(randomOffset)
+		newCF = CFrame.new(currentCF.Position, currentCF.LookVector + randomOffset)
+		SafeSetCameraCFrame(newCF, currentCF)
+	end
+end
+
+-- ======================================================================================== --
+-- AUTO-BUY SYSTEM                                                                        --
+-- ======================================================================================== --
+
+local function AutoBuyArmor()
+	if not getgenv().Osiris.Misc.AutoBuy.Enabled then return end
+
+	local function GetArmorCondition(armorType)
+		local armor = getgenv().Osiris.Misc.AutoBuy.Armor[armorType]
+		return armor.Enabled and armor.Condition or math.huge
+	end
+
+	-- Check current armor condition (simplified)
+	local currentArmor = 100 -- You'd need to get actual armor from game
+
+	if currentArmor <= GetArmorCondition("FireArmor") then
+		-- Buy Fire Armor
+		print("Buying Fire Armor")
+	elseif currentArmor <= GetArmorCondition("MediumArmor") then
+		-- Buy Medium Armor
+		print("Buying Medium Armor")
+	elseif currentArmor <= GetArmorCondition("HighMediumArmor") then
+		-- Buy High Medium Armor
+		print("Buying High Medium Armor")
+	end
+end
+
+-- ======================================================================================== --
+-- INVENTORY SORTER                                                                        --
+-- ======================================================================================== --
+
+local function SortInventory()
+	if not getgenv().Osiris.Misc.InventorySorter.Enabled then return end
+
+	-- Sort inventory based on priorities
+	local inventory = {} -- You'd need to get actual inventory from game
+
+	table.sort(inventory, function(a, b)
+		local priorityA = getgenv().Osiris.Misc.InventorySorter.Priorities[a.Name:lower()] or 999
+		local priorityB = getgenv().Osiris.Misc.InventorySorter.Priorities[b.Name:lower()] or 999
+		return priorityA < priorityB
+	end)
+
+	print("Inventory sorted")
+end
+
+-- ======================================================================================== --
+-- SAFETY MEASURES                                                                        --
+-- ======================================================================================== --
+
+local function CheckAntiCurve(target)
+	if not getgenv().Osiris.SafetyMeasures.AntiCurve.Enabled or not target then return true end
+
+	local hrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return true end
+
+	local screenPos, onScreen = camera:WorldToViewportPoint(hrp.Position)
+	if not onScreen then return true end
+
+	if getgenv().Osiris.SafetyMeasures.AntiCurve.Type == "3dAngles" then
+		local angles = getgenv().Osiris.SafetyMeasures.AntiCurve.Angles
+		local maxAngle = angles["Max Angle"]
+
+		local direction = (hrp.Position - camera.CFrame.Position).Unit
+		local angle = math.acos(camera.CFrame.LookVector:Dot(direction)) * (180 / math.pi)
+
+		if getgenv().Osiris.SafetyMeasures.AntiCurve["Print Information"] then
+			print("Anti-Curve Angle:", angle)
+		end
+
+		return angle <= maxAngle
+
+	elseif getgenv().Osiris.SafetyMeasures.AntiCurve.Type == "Pixels" then
+		local pixels = getgenv().Osiris.SafetyMeasures.AntiCurve.Pixels
+		local mousePos = UserInputService:GetMouseLocation()
+
+		local pixelDist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+
+		if getgenv().Osiris.SafetyMeasures.AntiCurve["Print Information"] then
+			print("Anti-Curve Pixels:", pixelDist)
+		end
+
+		return pixelDist <= pixels.X and pixelDist <= pixels.Y
+	end
+
+	return true
+end
+
+local function CheckNoFloorShots(target)
+	if not getgenv().Osiris.SafetyMeasures.NoFloorShots or not target then return true end
+
+	local hrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return true end
+
+	-- Check if target is on floor (Y position too low)
+	return hrp.Position.Y > -10 -- Adjust threshold as needed
+end
+
+-- ======================================================================================== --
+-- FOV VISUALIZATION                                                                      --
+-- ======================================================================================== --
+
 local FOVCircle = Drawing.new("Circle")
 FOVCircle.Visible = false
 FOVCircle.Thickness = 1
@@ -244,396 +672,215 @@ FOVCircle.Filled = false
 FOVCircle.Color = Color3.fromRGB(255, 255, 255)
 FOVCircle.Transparency = 1
 
--- get weapon fov radius
-local function getWeaponFOV(weaponName, distance, fovData, fovType, rangeData)
-    if fovType == "CircleFOV" then
-        local weaponFOVs = fovData.CircleFOV
+local function UpdateFOVVisualization()
+	local config = getgenv().Osiris
 
-        local category
-        if distance <= rangeData.ShortDistance then
-            category = 1
-        elseif distance <= rangeData.MediumDistance then
-            category = 2
-        else
-            category = 3
-        end
+	if not config.Visuals.FOVDeclaration.Silent.CircleFOV.Visible then
+		FOVCircle.Visible = false
+		return
+	end
 
-        if weaponFOVs[weaponName] then
-            return weaponFOVs[weaponName][category] or weaponFOVs[weaponName][2] or 10
-        else
-            return weaponFOVs.Others[category] or weaponFOVs.Others[2] or 10
-        end
-    else
-        return fovData.BoxFOV.Height * 10
-    end
+	local mousePos = UserInputService:GetMouseLocation()
+	local weapon = Utility:GetWeaponName(player)
+	local avgDist = 50
+	local fovRadius = Utility:GetFOVRadius(weapon, avgDist, config.FOVs.Silent, config.Silent.FOVType, config.RangeDeclaration)
+
+	FOVCircle.Position = mousePos
+	FOVCircle.Radius = fovRadius
+	FOVCircle.Color = config.Visuals.FOVDeclaration.Silent.CircleFOV.Color
+	FOVCircle.Filled = config.Visuals.FOVDeclaration.Silent.CircleFOV.Filled
+	FOVCircle.Transparency = config.Visuals.FOVDeclaration.Silent.CircleFOV.Transparency
+	FOVCircle.Visible = true
 end
-
--- update fov visualization
-local function updateFOVVisualization(config)
-    if not config.Visuals.FOVDeclaration.Silent.CircleFOV.Visible then
-        FOVCircle.Visible = false
-        return
-    end
-
-    local mousePos = UserInputService:GetMouseLocation()
-    local weaponName = getCurrentWeaponName()
-    local avgDistance = 50
-    local fovRadius = getWeaponFOV(weaponName, avgDistance, config.FOVs.Silent, config.Silent.FOVType, config.RangeDeclaration)
-
-    FOVCircle.Position = mousePos
-    FOVCircle.Radius = fovRadius
-    FOVCircle.Color = config.Visuals.FOVDeclaration.Silent.CircleFOV.Color
-    FOVCircle.Filled = config.Visuals.FOVDeclaration.Silent.CircleFOV.Filled
-    FOVCircle.Transparency = config.Visuals.FOVDeclaration.Silent.CircleFOV.Transparency
-    FOVCircle.Visible = true
-end
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 -- ======================================================================================== --
--- SILENT AIM FUNCTIONS                                                                    --
+-- WEAPON DETECTION                                                                       --
 -- ======================================================================================== --
 
--- perform silent aim
-local function performSilentAim()
-    if not silentAimActive or not getgenv().Osiris.Silent.Enabled then return end
+local function StartFiringDetection()
+	RunService.RenderStepped:Connect(function()
+		if not SilentAimActive or not getgenv().Osiris.Silent.Enabled then return end
 
-    local target = currentTarget or getClosestPlayerInFOV()
-    if not target then return end
+		local mouseDown = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
 
-    local prediction = getPingPrediction(
-        getgenv().Osiris.Silent["Auto-Prediction"],
-        getgenv().Osiris.Silent.Prediction,
-        getgenv().Osiris.AutoPrediction
-    )
-
-    local targetPosition = getTargetPosition(target, getgenv().Osiris.Silent.HitTarget, prediction)
-    if not targetPosition then return end
-
-    local revertCF = camera.CFrame
-    local cameraPosition = camera.CFrame.Position
-    local newCF = CFrame.new(cameraPosition, targetPosition)
-
-    safeSetCameraCFrame(newCF, revertCF)
-
-    if getgenv().Osiris.Silent.DebugShots then
-        -- debug marker can be implemented here
-    end
+		if mouseDown and not IsFiring then
+			IsFiring = true
+			PerformSilentAim()
+		elseif not mouseDown then
+			IsFiring = false
+		end
+	end)
 end
 
+local function OnToolActivated()
+	if SilentAimActive and getgenv().Osiris.Silent.Enabled then
+		PerformSilentAim()
+	end
+end
 
+local function SetupCharacter(character)
+	character.ChildAdded:Connect(function(child)
+		if child:IsA("Tool") then
+			child.Activated:Connect(OnToolActivated)
+		end
+	end)
 
-
-
-
-
-
-
-
-
-
-
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("Tool") then
+			child.Activated:Connect(OnToolActivated)
+		end
+	end
+end
 
 -- ======================================================================================== --
--- TRIGGERBOT FUNCTIONS                                                                    --
--- ======================================================================================== --
-
--- perform triggerbot
-local function performTriggerbot()
-    if not triggerbotActive or not getgenv().Osiris.Triggerbot.Enabled then return end
-
-    local currentTime = tick()
-    local cooldown = math.random(getgenv().Osiris.Triggerbot.MinDelay, getgenv().Osiris.Triggerbot.MaxDelay) / 1000
-
-    if currentTime - lastTriggerTime < cooldown then return end
-
-    local target = getClosestPlayerInFOV()
-    if not target then return end
-
-    local mousePos = UserInputService:GetMouseLocation()
-    local humanoidRootPart = target.Character:FindFirstChild("HumanoidRootPart")
-
-    if humanoidRootPart then
-        local screenPos, onScreen = camera:WorldToViewportPoint(humanoidRootPart.Position)
-        if onScreen then
-            local distanceFromMouse = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
-            local tolerance = 5
-
-            if distanceFromMouse <= tolerance then
-                mouse1press()
-                wait(0.01)
-                mouse1release()
-                lastTriggerTime = currentTime
-            end
-        end
-    end
-end
-
-
-
-
-
-
-
-
-
-
-
-
-
-
--- ======================================================================================== --
--- CAMLOCK FUNCTIONS                                                                       --
--- ======================================================================================== --
-
--- handle camlock
-local function handleCamlock()
-    if not camlockActive or not getgenv().Osiris.Camlock.Enabled then return end
-
-    local target = currentTarget or getClosestPlayerInFOV()
-    if not target then return end
-
-    local prediction = getPingPrediction(
-        getgenv().Osiris.Silent["Auto-Prediction"],
-        getgenv().Osiris.Camlock.Prediction,
-        getgenv().Osiris.AutoPrediction
-    )
-
-    local targetPosition = getTargetPosition(target, "Head", prediction)
-    if not targetPosition then return end
-
-    local smoothness = getgenv().Osiris.Camlock.Smoothness
-    local currentCF = camera.CFrame
-    local targetCF = CFrame.new(currentCF.Position, targetPosition)
-    camera.CFrame = currentCF:Lerp(targetCF, 1/smoothness)
-end
-
-
-
-
-
-
-
-
-
-
-
-
-
-
--- ======================================================================================== --
--- WEAPON DETECTION FUNCTIONS                                                              --
--- ======================================================================================== --
-
--- start firing detection
-local function startFiringDetection()
-    if firingConnection then firingConnection:Disconnect() end
-
-    firingConnection = RunService.RenderStepped:Connect(function()
-        if not silentAimActive or not getgenv().Osiris.Silent.Enabled then return end
-
-        if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
-            if not isFiring then
-                isFiring = true
-                performSilentAim()
-            end
-        else
-            isFiring = false
-        end
-    end)
-end
-
--- stop firing detection
-local function stopFiringDetection()
-    if firingConnection then
-        firingConnection:Disconnect()
-        firingConnection = nil
-    end
-    isFiring = false
-end
-
--- tool activated handler
-local function onToolActivated()
-    if silentAimActive and getgenv().Osiris.Silent.Enabled then
-        performSilentAim()
-    end
-end
-
--- setup tool connections
-local function setupToolConnections(tool)
-    if tool:IsA("Tool") then
-        if connection then connection:Disconnect() end
-        connection = tool.Activated:Connect(onToolActivated)
-        startFiringDetection()
-    end
-end
-
--- tool unequipped handler
-local function onToolUnequipped()
-    if connection then
-        connection:Disconnect()
-        connection = nil
-    end
-    stopFiringDetection()
-end
-
--- character setup
-local function setupCharacter(character)
-    character.ChildAdded:Connect(function(child)
-        if child:IsA("Tool") then
-            setupToolConnections(child)
-            child.Unequipped:Connect(onToolUnequipped)
-        end
-    end)
-
-    for _, child in ipairs(character:GetChildren()) do
-        if child:IsA("Tool") then
-            setupToolConnections(child)
-            child.Unequipped:Connect(onToolUnequipped)
-        end
-    end
-end
-
-
-
-
-
-
-
-
-
-
-
-
-
-
--- ======================================================================================== --
--- INPUT HANDLING                                                                          --
+-- INPUT HANDLING                                                                         --
 -- ======================================================================================== --
 
 UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
+	if processed then return end
 
-    local binds = getgenv().Osiris.Binds
+	local binds = getgenv().Osiris.Binds
 
-    if input.KeyCode == Enum.KeyCode[binds.SilentToggle:upper()] then
-        silentAimActive = not silentAimActive
-        print("silent aim:", silentAimActive and "on" or "off")
+	-- Silent Aim Toggle
+	if input.KeyCode == Enum.KeyCode[binds.SilentToggle:upper()] then
+		SilentAimActive = not SilentAimActive
+		print("Silent Aim:", SilentAimActive and "ON" or "OFF")
+	end
 
-        if silentAimActive then
-            startFiringDetection()
-        else
-            stopFiringDetection()
-        end
-    end
+	-- Camlock Toggle
+	if input.KeyCode == Enum.KeyCode[binds.CamlockToggle:upper()] then
+		CamlockActive = not CamlockActive
+		print("Camlock:", CamlockActive and "ON" or "OFF")
+	end
 
-    if input.KeyCode == Enum.KeyCode[binds.CamlockToggle:upper()] then
-        camlockActive = not camlockActive
-        print("camlock:", camlockActive and "on" or "off")
-    end
+	-- Triggerbot
+	if input.KeyCode == Enum.KeyCode[binds.Triggerbot:upper()] then
+		if getgenv().Osiris.Triggerbot.Activation.Type == "Toggle" then
+			TriggerbotActive = not TriggerbotActive
+			print("Triggerbot:", TriggerbotActive and "ON" or "OFF")
+		elseif getgenv().Osiris.Triggerbot.Activation.Type == "Hold" then
+			TriggerbotActive = true
+		end
+	end
 
-    if input.KeyCode == Enum.KeyCode[binds.Triggerbot:upper()] then
-        if getgenv().Osiris.Triggerbot.Activation.Type == "Toggle" then
-            triggerbotActive = not triggerbotActive
-            print("triggerbot:", triggerbotActive and "on" or "off")
+	-- Macro
+	if input.KeyCode == Enum.KeyCode[binds.Macro:upper()] then
+		if getgenv().Osiris.Macro.Mode == "Hold" then
+			MacroActive = true
+			StartMacro()
+		end
+	end
 
-            if triggerbotActive then
-                triggerbotConnection = RunService.RenderStepped:Connect(performTriggerbot)
-            else
-                if triggerbotConnection then
-                    triggerbotConnection:Disconnect()
-                    triggerbotConnection = nil
-                end
-            end
-        elseif getgenv().Osiris.Triggerbot.Activation.Type == "Hold" then
-            triggerbotActive = true
-            triggerbotConnection = RunService.RenderStepped:Connect(performTriggerbot)
-        end
-    end
+	-- Anti-Lock
+	if input.KeyCode == Enum.KeyCode[binds.AntiLock:upper()] then
+		AntiLockActive = not AntiLockActive
+		print("Anti-Lock:", AntiLockActive and "ON" or "OFF")
+	end
+
+	-- Auto Buy
+	if input.KeyCode == Enum.KeyCode[binds.AutoBuy:upper()] then
+		AutoBuyArmor()
+	end
+
+	-- Inventory Sorter
+	if input.KeyCode == Enum.KeyCode[binds.InventorySorter:upper()] then
+		SortInventory()
+	end
 end)
 
 UserInputService.InputEnded:Connect(function(input, processed)
-    if processed then return end
+	if processed then return end
 
-    local binds = getgenv().Osiris.Binds
+	local binds = getgenv().Osiris.Binds
 
-    if input.KeyCode == Enum.KeyCode[binds.Triggerbot:upper()] then
-        if getgenv().Osiris.Triggerbot.Activation.Type == "Hold" then
-            triggerbotActive = false
-            if triggerbotConnection then
-                triggerbotConnection:Disconnect()
-                triggerbotConnection = nil
-            end
-        end
-    end
+	-- Triggerbot Hold
+	if input.KeyCode == Enum.KeyCode[binds.Triggerbot:upper()] then
+		if getgenv().Osiris.Triggerbot.Activation.Type == "Hold" then
+			TriggerbotActive = false
+		end
+	end
+
+	-- Macro Hold
+	if input.KeyCode == Enum.KeyCode[binds.Macro:upper()] then
+		if getgenv().Osiris.Macro.Mode == "Hold" then
+			StopMacro()
+		end
+	end
 end)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 -- ======================================================================================== --
--- MAIN LOOP                                                                               --
+-- MAIN LOOP                                                                              --
 -- ======================================================================================== --
 
 RunService.RenderStepped:Connect(function()
-    -- update target if in regular mode
-    if getgenv().Osiris.Silent.Mode == "Regular" then
-        currentTarget = getClosestPlayerInFOV()
-    end
+	-- Update target for regular mode
+	if getgenv().Osiris.Silent.Mode == "Regular" then
+		CurrentTarget = Utility:GetClosestPlayer(1000, false)
+	end
 
-    -- handle camlock
-    handleCamlock()
+	-- Handle systems
+	HandleCamlock()
+	HandleAntiLock()
+	UpdateESP()
+	UpdateFOVVisualization()
 
-    -- update fov visualization
-    updateFOVVisualization(getgenv().Osiris)
+	-- Triggerbot loop
+	if TriggerbotActive then
+		PerformTriggerbot()
+	end
 end)
 
+-- ======================================================================================== --
+-- MISC FEATURES                                                                          --
+-- ======================================================================================== --
 
+-- Remove Seats
+if getgenv().Osiris.Misc.RemoveSeats then
+	for _, seat in ipairs(Workspace:GetDescendants()) do
+		if seat:IsA("Seat") or seat:IsA("VehicleSeat") then
+			seat:Destroy()
+		end
+	end
+end
 
+-- Anti-Fling (basic)
+if getgenv().Osiris.Misc.AntiFling then
+	local function AntiFling(char)
+		local hrp = char:WaitForChild("HumanoidRootPart")
+		local connection
 
+		connection = hrp:GetPropertyChangedSignal("AssemblyLinearVelocity"):Connect(function()
+			if hrp.AssemblyLinearVelocity.Magnitude > 100 then
+				hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+				hrp.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+			end
+		end)
 
+		char.AncestryChanged:Connect(function()
+			if connection then
+				connection:Disconnect()
+			end
+		end)
+	end
 
-
-
-
-
-
-
-
-
-
+	player.CharacterAdded:Connect(AntiFling)
+	if player.Character then
+		AntiFling(player.Character)
+	end
+end
 
 -- ======================================================================================== --
--- INITIALIZATION                                                                          --
+-- INITIALIZATION                                                                         --
 -- ======================================================================================== --
 
 if player.Character then
-    setupCharacter(player.Character)
+	SetupCharacter(player.Character)
+	StartFiringDetection()
 end
 
-player.CharacterAdded:Connect(setupCharacter)
+player.CharacterAdded:Connect(function(char)
+	SetupCharacter(char)
+	StartFiringDetection()
+end)
 
-warn("v5")
+print("Osiris v5 loaded - Full Nemesis-based implementation")
