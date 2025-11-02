@@ -1,0 +1,50 @@
+Osiris v5 - Modular Project Structure (C++ External Style)
+
+📁 osiris-v5/
+├── 📄 main.lua                    # Entry point - includes all modules
+├── 📄 services.lua               # Roblox service references
+├── 📄 utilities.lua              # Helper functions
+├── 📄 camera.lua                 # Camera manipulation functions
+├── 📄 prediction.lua             # Prediction calculations
+├── 📄 fov.lua                    # FOV checking and visualization
+├── 📄 silent.lua                 # Silent aim functionality
+├── 📄 triggerbot.lua             # Triggerbot functionality
+├── 📄 camlock.lua                # Camlock functionality
+├── 📄 input.lua                  # Input handling
+├── 📄 weapons.lua                # Automatic weapon firing detection
+├── 📄 loadstring.lua             # Simple loader for GitHub
+├── 📄 README.md                  # Documentation and config
+└── 📄 project-structure.txt      # This file
+
+🎯 IMPLEMENTED MODULES:
+✅ services.lua     - All Roblox service references
+✅ utilities.lua    - Helper functions (target detection, weapon names, etc.)
+✅ camera.lua       - safeSetCameraCFrame and camera manipulation
+✅ prediction.lua   - Ping-based auto prediction system
+✅ fov.lua          - Weapon-specific FOV circles and visualization
+✅ silent.lua       - Camera-based silent aim with target selection
+✅ triggerbot.lua   - Automatic firing with customizable delays
+✅ camlock.lua      - Smooth camera locking functionality
+✅ input.lua        - Keybind handling and input processing
+✅ weapons.lua      - Automatic weapon firing detection
+✅ main.lua         - Module initialization and main loops
+
+🔄 READY FOR EXPANSION:
+- visuals.lua       # ESP, tracers, and visual features
+- antiaim.lua       # Anti-aim and movement features
+- misc.lua          # Miscellaneous utilities (inventory, etc.)
+- games.lua         # Game-specific implementations
+- ui.lua            # User interface for configuration
+
+🛠️ MODULAR DESIGN:
+- Each feature is in its own file (like C++ externals)
+- Clean separation of concerns
+- Easy to add/remove features
+- Simple require() system for includes
+- Minimal cross-dependencies
+
+🚀 DEPLOYMENT:
+1. Upload all .lua files to GitHub repository
+2. Update loadstring.lua with correct main.lua URL
+3. Each module loads independently
+4. Add new features by creating new .lua files and requiring them in main.lua
