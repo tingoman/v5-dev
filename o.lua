@@ -1,6 +1,3 @@
--- ======================================================================================== --
--- UTILITY FUNCTIONS                                                                       --
--- ======================================================================================== --
 
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
@@ -12,8 +9,6 @@ local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
-
--- create utility functions (based on Nemesis)
 local Utility = {
 	Create = function(self, class, properties)
 		local instance = Instance.new(class)
@@ -199,9 +194,6 @@ local Utility = {
 	end,
 }
 
--- ======================================================================================== --
--- CAMERA FUNCTIONS                                                                       --
--- ======================================================================================== --
 
 local function SafeSetCameraCFrame(newCF, revertCF)
 	local revertScheduled = false
@@ -242,9 +234,6 @@ local function SafeSetCameraCFrame(newCF, revertCF)
 	end
 end
 
--- ======================================================================================== --
--- ESP SYSTEM (BASED ON NEMESIS)                                                           --
--- ======================================================================================== --
 
 local ESPHolder = Utility:Create('ScreenGui', {
 	Parent = gethui and gethui() or game:GetService("CoreGui"),
@@ -335,12 +324,11 @@ local function UpdateESP()
 		local pos, onScreen = camera:WorldToViewportPoint(hrp.Position)
 		local dist = Utility:GetDistance(camera.CFrame.Position, hrp.Position) / 3.5714285714
 
-		if onScreen and dist <= 1000 then -- Max draw distance
+		if onScreen and dist <= 1000 then
 			local size = hrp.Size.Y
 			local scaleFactor = (size * camera.ViewportSize.Y) / (pos.Z * 2)
 			local w, h = 3 * scaleFactor, 4.5 * scaleFactor
 
-			-- Name
 			if getgenv().Osiris.Visuals.RaidAwareness.Modules.Name.Visible then
 				local nameColor = (player.Team == Players.LocalPlayer.Team) and getgenv().Osiris.Visuals.RaidAwareness.AllyColor or getgenv().Osiris.Visuals.RaidAwareness.EnemyColor
 				ESP.Objects.Name.TextColor3 = nameColor
@@ -351,7 +339,6 @@ local function UpdateESP()
 				ESP.Objects.Name.Visible = false
 			end
 
-			-- Distance
 			if getgenv().Osiris.Visuals.RaidAwareness.Modules.Distance.Visible then
 				ESP.Objects.Distance.Position = UDim2.new(0, pos.X, 0, pos.Y + 20)
 				ESP.Objects.Distance.Text = string.format("%.0f studs", dist)
@@ -360,7 +347,6 @@ local function UpdateESP()
 				ESP.Objects.Distance.Visible = false
 			end
 
-			-- Box
 			if getgenv().Osiris.Visuals.RaidAwareness.Visible then
 				ESP.Objects.Box.Size = UDim2.new(0, w, 0, h)
 				ESP.Objects.Box.Position = UDim2.new(0, pos.X - w/2, 0, pos.Y - h/2)
@@ -369,7 +355,6 @@ local function UpdateESP()
 				ESP.Objects.Box.Visible = false
 			end
 
-			-- Health Bar
 			local health = Utility:GetHealth(player)
 			local maxHealth = Utility:GetMaxHealth(player)
 			local healthPercent = health / maxHealth
@@ -391,7 +376,6 @@ local function UpdateESP()
 	end
 end
 
--- Initialize ESP for all players
 for _, p in ipairs(Players:GetPlayers()) do
 	if p ~= player then
 		CreateESP(p)
@@ -400,9 +384,6 @@ end
 
 Players.PlayerAdded:Connect(CreateESP)
 
--- ======================================================================================== --
--- SILENT AIM SYSTEM                                                                      --
--- ======================================================================================== --
 
 local SilentAimActive = false
 local CurrentTarget = nil
@@ -415,7 +396,7 @@ local function PerformSilentAim()
 	if getgenv().Osiris.Silent.Mode == "Target" then
 		target = CurrentTarget
 	else
-		target = Utility:GetClosestPlayer(1000, false) -- Large FOV for regular mode
+		target = Utility:GetClosestPlayer(1000, false)
 	end
 
 	if not target or not Utility:ShouldHit(Utility:GetWeaponName(target), Utility:IsInAir(target)) then return end
@@ -434,9 +415,6 @@ local function PerformSilentAim()
 	SafeSetCameraCFrame(newCF, revertCF)
 end
 
--- ======================================================================================== --
--- CAMLOCK SYSTEM                                                                         --
--- ======================================================================================== --
 
 local CamlockActive = false
 
@@ -460,7 +438,6 @@ local function HandleCamlock()
 	local targetCF = CFrame.new(currentCF.Position, targetPos)
 	local shakiness = getgenv().Osiris.Camlock.CameraShakiness
 
-	-- Apply shakiness
 	local shakeOffset = Vector3.new(
 		math.random(-shakiness.X, shakiness.X),
 		math.random(-shakiness.Y, shakiness.Y),
@@ -471,9 +448,6 @@ local function HandleCamlock()
 	camera.CFrame = currentCF:Lerp(targetCF, 1/smoothness)
 end
 
--- ======================================================================================== --
--- TRIGGERBOT SYSTEM                                                                      --
--- ======================================================================================== --
 
 local TriggerbotActive = false
 local LastTriggerTime = 0
@@ -508,9 +482,6 @@ local function PerformTriggerbot()
 	end
 end
 
--- ======================================================================================== --
--- MACRO SYSTEM                                                                           --
--- ======================================================================================== --
 
 local MacroActive = false
 local MacroConnection = nil
@@ -518,52 +489,77 @@ local MacroConnection = nil
 local function StartMacro()
 	if MacroConnection then MacroConnection:Disconnect() end
 
-	MacroConnection = RunService.RenderStepped:Connect(function()
+	MacroConnection = RunService.Heartbeat:Connect(function()
 		if not getgenv().Osiris.Macro.Enabled or not MacroActive then return end
 
-		-- Third person macro (rapid fire)
 		if getgenv().Osiris.Macro.Type == "ThirdPerson" then
-			keypress(0x45) -- E key
-			task.wait(0.01)
-			keyrelease(0x45)
+			keypress(73)
+			RunService.Heartbeat:Wait()
+			keypress(79)
+			RunService.Heartbeat:Wait()
+			keyrelease(73)
+			RunService.Heartbeat:Wait()
+			keyrelease(79)
+			RunService.Heartbeat:Wait()
 		end
 	end)
 end
 
 local function StopMacro()
-	if MacroConnection then
-		MacroConnection:Disconnect()
-		MacroConnection = nil
+	if getgenv().Osiris.Macro.Mode == "Hold" then
+		if MacroConnection then
+			MacroConnection:Disconnect()
+			MacroConnection = nil
+		end
+		MacroActive = false
+	else
+		MacroActive = not MacroActive
+		if getgenv().Osiris.Macro.Type == "ThirdPerson" then
+			repeat
+				RunService.Heartbeat:Wait()
+				keypress(73)
+				RunService.Heartbeat:Wait()
+				keypress(79)
+				RunService.Heartbeat:Wait()
+				keyrelease(73)
+				RunService.Heartbeat:Wait()
+				keyrelease(79)
+				RunService.Heartbeat:Wait()
+			until not MacroActive
+		end
 	end
-	MacroActive = false
 end
 
--- ======================================================================================== --
--- ANTI-LOCK SYSTEM                                                                       --
--- ======================================================================================== --
 
 local AntiLockActive = false
 
 local function HandleAntiLock()
 	if not AntiLockActive or not getgenv().Osiris.AntiLock.Enabled then return end
 
+	if not player.Character then return end
+	local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+	local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
+
+	if not (humanoid and rootPart) then return end
+
+	local velocity = rootPart.Velocity
+	local detectionRange = math.random(-2, 2)
+
 	if getgenv().Osiris.AntiLock.Type == "Sides" then
-		-- Basic anti-lock by slightly modifying camera position
-		local currentCF = camera.CFrame
-		local randomOffset = Vector3.new(
-			math.random(-0.1, 0.1),
-			math.random(-0.1, 0.1),
-			math.random(-0.1, 0.1)
+		local multiplier = 8
+		local yAxis = 36 + detectionRange
+		local spoofed = Vector3.new(
+			math.clamp((-velocity.X or velocity.X) * multiplier, -27, 27) + detectionRange,
+			yAxis,
+			math.clamp((-velocity.Z or velocity.Z) * multiplier, -27, 27) + detectionRange
 		)
-		local newCF = currentCF * CFrame.new(randomOffset)
-		newCF = CFrame.new(currentCF.Position, currentCF.LookVector + randomOffset)
-		SafeSetCameraCFrame(newCF, currentCF)
+
+		rootPart.Velocity = spoofed
+		RunService.RenderStepped:Wait()
+		rootPart.Velocity = velocity
 	end
 end
 
--- ======================================================================================== --
--- AUTO-BUY SYSTEM                                                                        --
--- ======================================================================================== --
 
 local function AutoBuyArmor()
 	if not getgenv().Osiris.Misc.AutoBuy.Enabled then return end
@@ -573,43 +569,83 @@ local function AutoBuyArmor()
 		return armor.Enabled and armor.Condition or math.huge
 	end
 
-	-- Check current armor condition (simplified)
-	local currentArmor = 100 -- You'd need to get actual armor from game
+	local currentArmor = 100
 
 	if currentArmor <= GetArmorCondition("FireArmor") then
-		-- Buy Fire Armor
 		print("Buying Fire Armor")
 	elseif currentArmor <= GetArmorCondition("MediumArmor") then
-		-- Buy Medium Armor
 		print("Buying Medium Armor")
 	elseif currentArmor <= GetArmorCondition("HighMediumArmor") then
-		-- Buy High Medium Armor
 		print("Buying High Medium Armor")
 	end
 end
 
--- ======================================================================================== --
--- INVENTORY SORTER                                                                        --
--- ======================================================================================== --
 
 local function SortInventory()
 	if not getgenv().Osiris.Misc.InventorySorter.Enabled then return end
 
-	-- Sort inventory based on priorities
-	local inventory = {} -- You'd need to get actual inventory from game
+	local gunOrder = getgenv().Osiris.Misc.InventorySorter.Priorities
+	local backPack = player.Backpack
+	local currentTime = tick()
+	local orderV = 10 - #gunOrder
+	local cooldown = true
 
-	table.sort(inventory, function(a, b)
-		local priorityA = getgenv().Osiris.Misc.InventorySorter.Priorities[a.Name:lower()] or 999
-		local priorityB = getgenv().Osiris.Misc.InventorySorter.Priorities[b.Name:lower()] or 999
-		return priorityA < priorityB
-	end)
+	if cooldown then
+		local fakeFolder = Instance.new('Folder')
+		fakeFolder.Name = 'FakeFolder'
+		fakeFolder.Parent = Workspace
+		local fakeFolderID = Workspace.FakeFolder
 
-	print("Inventory sorted")
+		for _, v in pairs(backPack:GetChildren()) do
+			if v:IsA('Tool') then
+				v.Parent = Workspace.FakeFolder
+			end
+		end
+
+		for _, v in pairs(gunOrder) do
+			local gun = fakeFolderID:FindFirstChild(v)
+			if gun then
+				gun.Parent = backPack
+				wait(0.05)
+			else
+				orderV = orderV + 1
+			end
+		end
+
+		for _, v in pairs(fakeFolderID:GetChildren()) do
+			if v:FindFirstChild('Drink') or v:FindFirstChild('Eat') then
+				v.Parent = backPack
+				orderV = orderV - 1
+			end
+		end
+
+		if orderV > 0 then
+			for i = 1, orderV do
+				local tool = Instance.new('Tool')
+				tool.Name = ''
+				tool.ToolTip = 'PlaceHolder'
+				tool.GripPos = Vector3.new(0, 1, 0)
+				tool.RequiresHandle = false
+				tool.Parent = backPack
+			end
+		end
+
+		for _, v in pairs(fakeFolderID:GetChildren()) do
+			if v:IsA('Tool') then
+				v.Parent = backPack
+			end
+		end
+
+		for _, v in pairs(backPack:GetChildren()) do
+			if v.Name == '' then
+				v:Destroy()
+			end
+		end
+
+		fakeFolder:Destroy()
+	end
 end
 
--- ======================================================================================== --
--- SAFETY MEASURES                                                                        --
--- ======================================================================================== --
 
 local function CheckAntiCurve(target)
 	if not getgenv().Osiris.SafetyMeasures.AntiCurve.Enabled or not target then return true end
@@ -655,13 +691,9 @@ local function CheckNoFloorShots(target)
 	local hrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
 	if not hrp then return true end
 
-	-- Check if target is on floor (Y position too low)
-	return hrp.Position.Y > -10 -- Adjust threshold as needed
+	return hrp.Position.Y > -10
 end
 
--- ======================================================================================== --
--- FOV VISUALIZATION                                                                      --
--- ======================================================================================== --
 
 local FOVCircle = Drawing.new("Circle")
 FOVCircle.Visible = false
@@ -693,27 +725,26 @@ local function UpdateFOVVisualization()
 	FOVCircle.Visible = true
 end
 
--- ======================================================================================== --
--- WEAPON DETECTION                                                                       --
--- ======================================================================================== --
 
 local function StartFiringDetection()
-	RunService.RenderStepped:Connect(function()
-		if not SilentAimActive or not getgenv().Osiris.Silent.Enabled then return end
+	if getgenv().Osiris.Silent.HitScan == "Automatic" then
+		RunService.RenderStepped:Connect(function()
+			if not SilentAimActive or not getgenv().Osiris.Silent.Enabled then return end
 
-		local mouseDown = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+			local mouseDown = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
 
-		if mouseDown and not IsFiring then
-			IsFiring = true
-			PerformSilentAim()
-		elseif not mouseDown then
-			IsFiring = false
-		end
-	end)
+			if mouseDown and not IsFiring then
+				IsFiring = true
+				PerformSilentAim()
+			elseif not mouseDown then
+				IsFiring = false
+			end
+		end)
+	end
 end
 
 local function OnToolActivated()
-	if SilentAimActive and getgenv().Osiris.Silent.Enabled then
+	if SilentAimActive and getgenv().Osiris.Silent.Enabled and getgenv().Osiris.Silent.HitScan == "OnShot" then
 		PerformSilentAim()
 	end
 end
@@ -732,28 +763,153 @@ local function SetupCharacter(character)
 	end
 end
 
--- ======================================================================================== --
--- INPUT HANDLING                                                                         --
--- ======================================================================================== --
 
 UserInputService.InputBegan:Connect(function(input, processed)
 	if processed then return end
 
 	local binds = getgenv().Osiris.Binds
 
-	-- Silent Aim Toggle
 	if input.KeyCode == Enum.KeyCode[binds.SilentToggle:upper()] then
-		SilentAimActive = not SilentAimActive
-		print("Silent Aim:", SilentAimActive and "ON" or "OFF")
+		if getgenv().Osiris.Silent.HitScan == "Normal" then
+			if getgenv().Osiris.Silent.Enabled then
+				PerformSilentAim()
+			end
+		elseif getgenv().Osiris.Silent.HitScan == "Automatic" then
+			SilentAimActive = not SilentAimActive
+			print("Silent Aim:", SilentAimActive and "ON" or "OFF")
+
+			if SilentAimActive then
+				StartFiringDetection()
+			end
+		end
 	end
 
-	-- Camlock Toggle
 	if input.KeyCode == Enum.KeyCode[binds.CamlockToggle:upper()] then
 		CamlockActive = not CamlockActive
 		print("Camlock:", CamlockActive and "ON" or "OFF")
 	end
 
-	-- Triggerbot
+	if input.KeyCode == Enum.KeyCode[binds.Triggerbot:upper()] then
+		if getgenv().Osiris.Triggerbot.Activation.Type == "Toggle" then
+			TriggerbotActive = not TriggerbotActive
+			print("Triggerbot:", TriggerbotActive and "ON" or "OFF")
+		elseif getgenv().Osiris.Triggerbot.Activation.Type == "Hold" then
+			TriggerbotActive = true
+		end
+	end
+
+	if input.KeyCode == Enum.KeyCode[binds.Macro:upper()] then
+		if getgenv().Osiris.Macro.Mode == "Hold" then
+			MacroActive = true
+			StartMacro()
+		else
+			StopMacro()
+		end
+	end
+
+	if input.KeyCode == Enum.KeyCode[binds.AntiLock:upper()] then
+		AntiLockActive = not AntiLockActive
+		print("Anti-Lock:", AntiLockActive and "ON" or "OFF")
+	end
+
+	if input.KeyCode == Enum.KeyCode[binds.AutoBuy:upper()] then
+		AutoBuyArmor()
+	end
+
+	if input.KeyCode == Enum.KeyCode[binds.InventorySorter:upper()] then
+		SortInventory()
+	end
+end
+
+UserInputService.InputEnded:Connect(function(input, processed)
+	if processed then return end
+
+	local binds = getgenv().Osiris.Binds
+
+	if input.KeyCode == Enum.KeyCode[binds.SilentToggle:upper()] then
+		if getgenv().Osiris.Silent.HitScan == "Automatic" and getgenv().Osiris.Silent.Activation.Type == "Hold" then
+			SilentAimActive = false
+			print("Silent Aim: OFF (Hold)")
+		end
+	end
+
+	if input.KeyCode == Enum.KeyCode[binds.Triggerbot:upper()] then
+		if getgenv().Osiris.Triggerbot.Activation.Type == "Hold" then
+			TriggerbotActive = false
+		end
+	end
+
+	if input.KeyCode == Enum.KeyCode[binds.Macro:upper()] then
+		if getgenv().Osiris.Macro.Mode == "Hold" then
+			StopMacro()
+		end
+	end
+end)
+
+RunService.RenderStepped:Connect(function()
+	if getgenv().Osiris.Silent.Mode == "Regular" then
+		CurrentTarget = Utility:GetClosestPlayer(1000, false)
+	end
+
+	HandleCamlock()
+	HandleAntiLock()
+	UpdateESP()
+	UpdateFOVVisualization()
+
+	if TriggerbotActive then
+		PerformTriggerbot()
+	end
+end)
+
+if getgenv().Osiris.Misc.RemoveSeats then
+	for _, seat in ipairs(Workspace:GetDescendants()) do
+		if seat:IsA("Seat") or seat:IsA("VehicleSeat") then
+			seat:Destroy()
+		end
+	end
+end
+
+if getgenv().Osiris.Misc.AntiFling then
+	local function AntiFling(char)
+		local hrp = char:WaitForChild("HumanoidRootPart")
+		local connection
+
+		connection = hrp:GetPropertyChangedSignal("AssemblyLinearVelocity"):Connect(function()
+			if hrp.AssemblyLinearVelocity.Magnitude > 100 then
+				hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+				hrp.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+			end
+		end)
+
+		char.AncestryChanged:Connect(function()
+			if connection then
+				connection:Disconnect()
+			end
+		end)
+	end
+
+	player.CharacterAdded:Connect(AntiFling)
+	if player.Character then
+		AntiFling(player.Character)
+	end
+end
+
+if player.Character then
+	SetupCharacter(player.Character)
+	StartFiringDetection()
+end
+
+player.CharacterAdded:Connect(function(char)
+	SetupCharacter(char)
+	StartFiringDetection()
+end)
+
+print("Osiris v5 loaded - Full Nemesis-based implementation")
+	if input.KeyCode == Enum.KeyCode[binds.CamlockToggle:upper()] then
+		CamlockActive = not CamlockActive
+		print("Camlock:", CamlockActive and "ON" or "OFF")
+	end
+
 	if input.KeyCode == Enum.KeyCode[binds.Triggerbot:upper()] then
 		if getgenv().Osiris.Triggerbot.Activation.Type == "Toggle" then
 			TriggerbotActive = not TriggerbotActive
@@ -793,7 +949,15 @@ UserInputService.InputEnded:Connect(function(input, processed)
 
 	local binds = getgenv().Osiris.Binds
 
-	-- Triggerbot Hold
+	-- Silent Aim (only Automatic mode uses hold activation)
+	if input.KeyCode == Enum.KeyCode[binds.SilentToggle:upper()] then
+		if getgenv().Osiris.Silent.HitScan == "Automatic" and getgenv().Osiris.Silent.Activation.Type == "Hold" then
+			SilentAimActive = false
+			print("Silent Aim: OFF (Hold)")
+		end
+	end
+
+ Hold
 	if input.KeyCode == Enum.KeyCode[binds.Triggerbot:upper()] then
 		if getgenv().Osiris.Triggerbot.Activation.Type == "Hold" then
 			TriggerbotActive = false
@@ -808,9 +972,6 @@ UserInputService.InputEnded:Connect(function(input, processed)
 	end
 end)
 
--- ======================================================================================== --
--- MAIN LOOP                                                                              --
--- ======================================================================================== --
 
 RunService.RenderStepped:Connect(function()
 	-- Update target for regular mode
@@ -824,17 +985,13 @@ RunService.RenderStepped:Connect(function()
 	UpdateESP()
 	UpdateFOVVisualization()
 
-	-- Triggerbot loop
+ loop
 	if TriggerbotActive then
 		PerformTriggerbot()
 	end
 end)
 
--- ======================================================================================== --
--- MISC FEATURES                                                                          --
--- ======================================================================================== --
 
--- Remove Seats
 if getgenv().Osiris.Misc.RemoveSeats then
 	for _, seat in ipairs(Workspace:GetDescendants()) do
 		if seat:IsA("Seat") or seat:IsA("VehicleSeat") then
@@ -843,7 +1000,6 @@ if getgenv().Osiris.Misc.RemoveSeats then
 	end
 end
 
--- Anti-Fling (basic)
 if getgenv().Osiris.Misc.AntiFling then
 	local function AntiFling(char)
 		local hrp = char:WaitForChild("HumanoidRootPart")
@@ -869,9 +1025,6 @@ if getgenv().Osiris.Misc.AntiFling then
 	end
 end
 
--- ======================================================================================== --
--- INITIALIZATION                                                                         --
--- ======================================================================================== --
 
 if player.Character then
 	SetupCharacter(player.Character)
