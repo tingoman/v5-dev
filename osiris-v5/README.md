@@ -3,7 +3,7 @@ continuation of osiris.
 loadstring:
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/yourusername/osiris-v5/main/main.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/tingoman/osiris-v5/main/main.lua"))()
 ```
 
 config:
@@ -291,3 +291,4 @@ main.lua and all features are in separate files:
 - weapons.lua - automatic weapons
 - services.lua - roblox services
 - utilities.lua - helper functions
+
